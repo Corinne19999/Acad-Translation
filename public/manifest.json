@@ -1,0 +1,24 @@
+{
+  "short_name": "文献翻译",
+  "name": "学术文献及古籍识别翻译智能助手",
+  "description": "旨在为研究者提供最高水平的学术文献及古籍级联式视觉理解识别与上下文翻译系统。",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "512x512",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "192x192",
+      "purpose": "any"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#F9F7F2",
+  "theme_color": "#7C786D",
+  "display": "standalone",
+  "orientation": "any"
+}

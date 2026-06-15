@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Round Rect Background in Ivory -->
+  <rect width="512" height="512" rx="112" fill="#F9F7F2"/>
+  <!-- Elegant Inner Border -->
+  <rect x="24" y="24" width="464" height="464" rx="88" fill="none" stroke="#7C786D" stroke-width="6" stroke-dasharray="14 10" opacity="0.6"/>
+  <!-- Subtly shaded calligraphic circle backdrop -->
+  <circle cx="256" cy="256" r="160" fill="none" stroke="#E2DFD6" stroke-width="4"/>
+  <circle cx="256" cy="256" r="140" fill="none" stroke="#7C786D" stroke-width="1.5" opacity="0.4"/>
+  <!-- Stylized translation/literature characters in beautiful kanji -->
+  <text x="256" y="315" font-family="'Noto Serif JP', 'Georgia', serif" font-size="200" font-weight="700" fill="#1A1A1A" text-anchor="middle">訳</text>
+  <!-- Stylized subtitle / accent mark -->
+  <text x="256" y="440" font-family="'Inter', sans-serif" font-size="24" font-weight="700" fill="#7C786D" text-anchor="middle" letter-spacing="12">文 献 翻 译</text>
+</svg>

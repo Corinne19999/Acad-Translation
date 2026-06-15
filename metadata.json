@@ -1,0 +1,8 @@
+{
+  "name": "Remix: 文献识别翻译智能助手",
+  "description": "专为书籍与学术文献设计的双阶段智能翻译工作流。第一阶段支持PDF与图片图像视觉排版重组，剔除注音杂音；第二阶段级联前序上下文、剔除书眉页码进行高连贯学术翻译，支持双语比照导出。",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
