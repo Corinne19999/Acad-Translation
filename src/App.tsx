@@ -114,6 +114,45 @@ const getFormattedEndpoint = (endpoint: string): string => {
   return cleaned + '/v1/chat/completions';
 };
 
+// Helper to save page text caching (without bulky base64 imageUrls to avoid hitting 5MB LocalStorage limit)
+const saveDocCache = (fileName: string, pageDataMap: { [key: number]: PageData }) => {
+  if (!fileName || !pageDataMap) return;
+  try {
+    const cacheMap: { [key: number]: { recognizedText: string; translatedText: string; status: PageStatus } } = {};
+    let hasData = false;
+    for (const key in pageDataMap) {
+      const page = pageDataMap[key];
+      if (page.recognizedText || page.translatedText) {
+        cacheMap[key] = {
+          recognizedText: page.recognizedText || '',
+          translatedText: page.translatedText || '',
+          status: page.status
+        };
+        hasData = true;
+      }
+    }
+    if (hasData) {
+      localStorage.setItem(`manuscript_cache_${fileName}`, JSON.stringify(cacheMap));
+    }
+  } catch (e) {
+    console.warn('Failed to save document cache:', e);
+  }
+};
+
+// Helper to retrieve saved page text cache
+const getDocCache = (fileName: string): { [key: number]: { recognizedText: string; translatedText: string; status: PageStatus } } | null => {
+  if (!fileName) return null;
+  try {
+    const saved = localStorage.getItem(`manuscript_cache_${fileName}`);
+    if (saved) {
+      return JSON.parse(saved);
+    }
+  } catch (e) {
+    console.error('Failed to parse saved document cache:', e);
+  }
+  return null;
+};
+
 interface LogEntry {
   timestamp: string;
   type: 'info' | 'success' | 'warn' | 'error';
@@ -163,7 +202,7 @@ export default function App() {
         // Ensure defaults for any new properties
         return {
           ocrModel: 'gemini-3.5-flash',
-          translationModel: 'gemini-3.1-pro-preview',
+          translationModel: 'gemini-3.5-flash',
           temperature: 0.2,
           ocrProvider: 'default',
           ocrCustomEndpoint: 'https://api.openai.com/v1/chat/completions',
@@ -190,7 +229,7 @@ export default function App() {
     }
     return {
       ocrModel: 'gemini-3.5-flash',
-      translationModel: 'gemini-3.1-pro-preview',
+      translationModel: 'gemini-3.5-flash',
       temperature: 0.2,
       ocrProvider: 'default',
       ocrCustomEndpoint: 'https://api.openai.com/v1/chat/completions',
@@ -217,6 +256,13 @@ export default function App() {
     localStorage.setItem('manuscript_translator_config', JSON.stringify(config));
   }, [config]);
 
+  // Save page text cache to localStorage whenever "pages" or "fileName" changes
+  useEffect(() => {
+    if (fileName && Object.keys(pages).length > 0) {
+      saveDocCache(fileName, pages);
+    }
+  }, [pages, fileName]);
+
   // Dynamic displayed labels for active interfaces in the top header and overlays
   const activeOcrLabel = config.ocrProvider === 'custom'
     ? `${config.ocrCustomModel || 'custom-model'} (API)`
@@ -240,6 +286,7 @@ export default function App() {
   const [isOcrProcessing, setIsOcrProcessing] = useState<boolean>(false);
   const [isTranslationProcessing, setIsTranslationProcessing] = useState<boolean>(false);
   const [batchRunning, setBatchRunning] = useState<boolean>(false);
+  const [batchProgress, setBatchProgress] = useState<{ current: number; total: number } | null>(null);
   const [apiError, setApiError] = useState<string>('');
   const [logs, setLogs] = useState<LogEntry[]>([]);
 
@@ -253,6 +300,7 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const logContainerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const batchRunningRef = useRef<boolean>(false);
 
   // Initialize with some welcoming log
   useEffect(() => {
@@ -503,6 +551,9 @@ export default function App() {
     addLog(`文件导入中: ${file.name} (${sizeInMB} MB)...`, 'info');
 
     // Reset previous states
+    batchRunningRef.current = false;
+    setBatchRunning(false);
+    setBatchProgress(null);
     setPages({});
     setCurrentPage(1);
     setRotation(0);
@@ -524,18 +575,35 @@ export default function App() {
             setTotalPages(pdf.numPages);
             addLog(`PDF 载入成功。共检测到 ${pdf.numPages} 页。`, 'success');
             
-            // Set up empty list structure
+            // Set up empty list structure or restore from local cache
+            const cacheMap = getDocCache(file.name);
             const initialPages: { [key: number]: PageData } = {};
+            let restoredCount = 0;
             for (let i = 1; i <= pdf.numPages; i++) {
-              initialPages[i] = {
-                pageNumber: i,
-                imageUrl: '',
-                status: 'idle',
-                recognizedText: '',
-                translatedText: ''
-              };
+              const cached = cacheMap ? cacheMap[i] : null;
+              if (cached) {
+                restoredCount++;
+                initialPages[i] = {
+                  pageNumber: i,
+                  imageUrl: '',
+                  status: cached.status || 'completed',
+                  recognizedText: cached.recognizedText || '',
+                  translatedText: cached.translatedText || ''
+                };
+              } else {
+                initialPages[i] = {
+                  pageNumber: i,
+                  imageUrl: '',
+                  status: 'idle',
+                  recognizedText: '',
+                  translatedText: ''
+                };
+              }
             }
             setPages(initialPages);
+            if (restoredCount > 0) {
+              addLog(`📚 本地已存在该文献的识别翻译进程！已成功为您自动恢复第 1 至 ${pdf.numPages} 页中的 ${restoredCount} 个页面的翻译与识别缓存。运行“批量级联翻译”可执行断点开始。`, 'success');
+            }
           } catch (pdfErr: any) {
             console.error(pdfErr);
             addLog(`解析 PDF 失败: ${pdfErr.message}`, 'error');
@@ -1051,6 +1119,35 @@ ${sourceJapanese}
   };
 
   /**
+   * Clear persistent local storage cache for the current file to start fresh
+   */
+  const clearDocumentCache = () => {
+    if (!fileName) return;
+    try {
+      localStorage.removeItem(`manuscript_cache_${fileName}`);
+      // Reset all page states to blank / idle
+      setPages(prev => {
+        const nextPages = { ...prev };
+        for (const key in nextPages) {
+          nextPages[key] = {
+            ...nextPages[key],
+            status: 'idle',
+            recognizedText: '',
+            translatedText: ''
+          };
+        }
+        return nextPages;
+      });
+      setEditOcrText('');
+      setEditTranslationText('');
+      addLog(`已成功清除并重置当前文献 "${fileName}" 的所有识别文字与翻译本地缓存记录。`, 'success');
+    } catch (e) {
+      console.error(e);
+      addLog('清理本地缓存出错，请刷新重试。', 'error');
+    }
+  };
+
+  /**
    * COMBINED WORKFLOW: OCR + TRANSLATE CURRENT PAGE WITH A SINGLE CLICK
    */
   const executeUnifiedWorkflow = async () => {
@@ -1073,43 +1170,63 @@ ${sourceJapanese}
    * BATCH PROCESSING: Auto run sequence for multiple pages (e.g. from current page to end)
    */
   const startBatchProcess = async () => {
-    if (batchRunning) {
+    if (batchRunningRef.current) {
+      batchRunningRef.current = false;
       setBatchRunning(false);
+      setBatchProgress(null);
       addLog('批量翻译任务已被用户主动中止。', 'warn');
       return;
     }
 
+    batchRunningRef.current = true;
     setBatchRunning(true);
     addLog(`启动批量自动化任务：从第 ${currentPage} 页开始翻译，直至文档最后一页...`, 'warn');
 
     let currentWorkingPage = currentPage;
     while (currentWorkingPage <= totalPages) {
-      // Check if user turned off batch mode during previous promise loop
-      let latestRunningState = false;
-      setBatchRunning((curr) => {
-        latestRunningState = curr;
-        return curr;
-      });
-      if (!latestRunningState) break;
+      if (!batchRunningRef.current) break;
 
       setCurrentPage(currentWorkingPage); // Slide client visually to see the current page
-      addLog(`[批量处理] 正在翻译第 ${currentWorkingPage} / ${totalPages} 页...`, 'info');
+      setBatchProgress({ current: currentWorkingPage, total: totalPages });
+
+      const pageState = pages[currentWorkingPage];
+      if (pageState && pageState.status === 'completed' && pageState.translatedText.trim()) {
+        addLog(`[批量处理] 第 ${currentWorkingPage} 页已处于完成状态（检测至本地缓存译文），自动跳过。`, 'success');
+        currentWorkingPage++;
+        continue;
+      }
+
+      addLog(`[批量处理] 正在处理第 ${currentWorkingPage} / ${totalPages} 页...`, 'info');
 
       try {
-        // Step 1: Visual ocr
-        const recognized = await executeOcrForPage(currentWorkingPage, true);
+        let recognized = '';
+        
+        // Skip OCR if already completed/cached
+        if (pageState && (pageState.status === 'ocr_done' || pageState.status === 'completed') && pageState.recognizedText.trim()) {
+          addLog(`[批量处理] 第 ${currentWorkingPage} 页已包含 OCR 识别文字缓存，自动应用并跳过第一步识别。`, 'success');
+          recognized = pageState.recognizedText;
+        } else {
+          // Step 1: Visual ocr
+          recognized = await executeOcrForPage(currentWorkingPage, true);
+        }
+        
+        // Extra safe check as network delay could have occurred during OCR call
+        if (!batchRunningRef.current) break;
+        
         // Step 2: Consistent Translation
         await executeTranslationForPage(currentWorkingPage, true, recognized);
-        addLog(`[批量处理] 第 ${currentWorkingPage} 页处理完成。`, 'success');
+        addLog(`[批量处理] 第 ${currentWorkingPage} 页处理完成，已自动暂存至本地。`, 'success');
       } catch (err: any) {
-        addLog(`[批量处理] 第 ${currentWorkingPage} 页出错，批量队列挂起。错误原因: ${err.message}`, 'error');
+        addLog(`[批量处理] 第 ${currentWorkingPage} 页出错，批量队列挂起。错误原因: ${err.message || err}`, 'error');
         break;
       }
 
       currentWorkingPage++;
     }
 
+    batchRunningRef.current = false;
     setBatchRunning(false);
+    setBatchProgress(null);
     addLog('批量自动流处理已结束。', 'info');
   };
 
@@ -1173,6 +1290,14 @@ ${sourceJapanese}
       return htmlOutput;
     };
 
+    const mdToHtmlInline = (mdText: string): string => {
+      if (!mdText) return '';
+      return mdText
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>')
+        .replace(/`(.*?)`/g, '<code style="background-color: #f5f4ef; padding: 2px 4px; font-family: \'Consolas\', monospace; font-size: 9.5pt;">$1</code>');
+    };
+
     let innerHtml = '';
     
     if (type === 'original') {
@@ -1199,12 +1324,15 @@ ${sourceJapanese}
       innerHtml += `<h1 style="text-align: center; font-size: 22pt; font-weight: bold; color: #1a1a1a; margin-bottom: 15px;">文献双语对照成果</h1>`;
       innerHtml += `<p style="text-align: center; color: #7c786d; font-size: 10pt; margin-bottom: 30px;">源文件：${fileName || '学术文献'} | 原文与智能学术译文逐段横排对照</p>`;
       
+      let isFirstRendered = true;
       for (let i = 1; i <= totalPages; i++) {
         const recognizedText = pages[i]?.recognizedText || '';
         const translatedText = pages[i]?.translatedText || '';
         if (recognizedText || translatedText) {
+          const pageBreakStyle = isFirstRendered ? '' : 'page-break-before: always;';
+          isFirstRendered = false;
           innerHtml += `
-            <div style="margin-top: 30px; margin-bottom: 15px; page-break-before: always; border-bottom: 2px solid #7c786d; padding-bottom: 5px;">
+            <div style="margin-top: 30px; margin-bottom: 15px; ${pageBreakStyle} border-bottom: 2px solid #7c786d; padding-bottom: 5px;">
               <strong style="font-size: 13pt; color: #1a1a1a;">▋ 第 ${i} 页 对照结果 (横排对照)</strong>
             </div>
           `;
@@ -1219,10 +1347,10 @@ ${sourceJapanese}
             
             innerHtml += `<div style="margin-bottom: 18px; padding-top: 4px; padding-bottom: 4px; border-left: 3px solid #dcd9ce; padding-left: 12px;">`;
             if (orig) {
-              innerHtml += `<p style="font-size: 10.5pt; color: #555555; line-height: 1.5; margin-bottom: 6px; text-align: justify;"><span style="font-weight: bold; color: #8b5a2b; font-size: 9.5pt;">【原文】</span>${mdToHtml(orig)}</p>`;
+              innerHtml += `<p style="font-size: 10.5pt; color: #555555; line-height: 1.5; margin-bottom: 6px; text-align: justify;"><span style="font-weight: bold; color: #8b5a2b; font-size: 9.5pt;">【原文】</span>${mdToHtmlInline(orig)}</p>`;
             }
             if (tran) {
-              innerHtml += `<p style="font-size: 11pt; color: #111111; line-height: 1.6; margin-bottom: 0; text-align: justify;"><span style="font-weight: bold; color: #1a1a1a; font-size: 9.5pt;">【译文】</span>${mdToHtml(tran)}</p>`;
+              innerHtml += `<p style="font-size: 11pt; color: #111111; line-height: 1.6; margin-bottom: 0; text-align: justify;"><span style="font-weight: bold; color: #1a1a1a; font-size: 9.5pt;">【译文】</span>${mdToHtmlInline(tran)}</p>`;
             }
             innerHtml += `</div>`;
           }
@@ -1443,12 +1571,19 @@ ${sourceJapanese}
           {fileName && (
             <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-sm border border-[#DCD9CE] text-xs text-[#1A1A1A]">
               <FileText size={14} className="text-[#7C786D]" />
-              <div className="max-w-[180px] lg:max-w-[280px] truncate font-semibold" title={fileName}>
+              <div className="max-w-[150px] lg:max-w-[220px] truncate font-semibold" title={fileName}>
                 {fileName}
               </div>
               <span className="text-[10px] text-[#7C786D] bg-[#F1EFE9] border border-[#DCD9CE] px-1.5 py-0.5 rounded-sm font-mono">
                 {fileSize}
               </span>
+              <button
+                onClick={clearDocumentCache}
+                className="text-[10px] font-semibold text-red-700 hover:text-white bg-red-50 hover:bg-red-700 border border-red-200 hover:border-red-700 px-1.5 py-0.5 rounded-sm ml-1 cursor-pointer transition-all"
+                title="清除由于级联翻译暂存于本地的当前文献进度，重新开始"
+              >
+                清除缓存
+              </button>
             </div>
           )}
         </div>
@@ -1456,7 +1591,7 @@ ${sourceJapanese}
         {/* Translation Progress Controls */}
         <div className="flex items-center gap-3">
           {totalPages > 0 && (
-            <div className="flex items-center gap-2 text-xs bg-white border border-[#DCD9CE] rounded-sm px-2.5 py-1 text-[#1A1A1A]">
+            <div className="flex items-center gap-2 text-xs bg-white border border-[#DCD9CE] rounded-sm px-2.5 py-1 text-[#1A1A1A] h-[36px]">
               <span className="text-[#7C786D] font-medium">页码:</span>
               <button 
                 onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
@@ -1491,7 +1626,7 @@ ${sourceJapanese}
             <button
               onClick={executeUnifiedWorkflow}
               disabled={!totalPages || isOcrProcessing || isTranslationProcessing || batchRunning}
-              className="px-4 py-2.5 text-xs font-semibold rounded-sm bg-white hover:bg-[#F9F7F2] border border-[#DCD9CE] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 text-amber-800 transition-colors cursor-pointer"
+              className="h-[36px] px-4 text-xs font-semibold rounded-sm bg-white hover:bg-[#F9F7F2] border border-[#DCD9CE] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 text-amber-800 transition-colors cursor-pointer"
               id="btn-single-run"
               title="一键提取并翻译当前页面"
             >
@@ -1502,7 +1637,7 @@ ${sourceJapanese}
             <button
               onClick={startBatchProcess}
               disabled={!totalPages || isOcrProcessing || isTranslationProcessing}
-              className={`px-5 py-2.5 text-xs font-bold uppercase tracking-wider rounded-sm flex items-center gap-1.5 transition-colors cursor-pointer ${
+              className={`h-[36px] px-4 text-xs font-semibold rounded-sm flex items-center gap-1.5 transition-colors cursor-pointer ${
                 batchRunning 
                   ? 'bg-red-700 text-white hover:bg-red-800 border border-red-800' 
                   : 'bg-[#1A1A1A] hover:bg-black text-[#F9F7F2] border border-[#1A1A1A] shadow-sm'
@@ -1513,7 +1648,7 @@ ${sourceJapanese}
               {batchRunning ? (
                 <>
                   <Loader2 size={13} className="animate-spin" />
-                  停止批量翻译
+                  停止批量 ({batchProgress ? `${batchProgress.current}/${batchProgress.total}页` : '计算中'})
                 </>
               ) : (
                 <>
@@ -1522,6 +1657,40 @@ ${sourceJapanese}
                 </>
               )}
             </button>
+
+            <div className="relative group/export inline-block">
+              <button
+                disabled={!totalPages}
+                className="h-[36px] px-4 text-xs font-semibold rounded-sm bg-white hover:bg-[#F9F7F2] border border-[#DCD9CE] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 text-[#1A1A1A] transition-colors cursor-pointer select-none"
+                id="btn-toolbar-export"
+                title="导出文献格式识别译文"
+              >
+                <Download size={13} />
+                导 出
+              </button>
+              {totalPages > 0 && (
+                <div className="absolute right-0 top-full mt-1 border border-[#DCD9CE] bg-white rounded-sm shadow-md opacity-0 pointer-events-none group-focus-within/export:opacity-100 group-hover/export:opacity-100 group-focus-within/export:pointer-events-auto group-hover/export:pointer-events-auto transition text-xs py-1 w-36 z-50 flex flex-col font-sans">
+                  <button 
+                    onClick={() => exportTranslatedDocument('original')}
+                    className="px-3 py-2 text-left text-[#1A1A1A] hover:bg-[#F1EFE9] transition-colors cursor-pointer font-medium"
+                  >
+                    仅原文提取 (.doc)
+                  </button>
+                  <button 
+                    onClick={() => exportTranslatedDocument('translation')}
+                    className="px-3 py-2 text-left text-[#1A1A1A] hover:bg-[#F1EFE9] transition-colors cursor-pointer font-medium"
+                  >
+                    仅译文翻译 (.doc)
+                  </button>
+                  <button 
+                    onClick={() => exportTranslatedDocument('bilingual')}
+                    className="px-3 py-2 text-left text-[#1A1A1A] hover:bg-[#F1EFE9] transition-colors cursor-pointer font-medium"
+                  >
+                    双语对照 (.doc)
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -1531,6 +1700,11 @@ ${sourceJapanese}
         <div className="bg-[#F1EFE9] px-6 py-2 border-b border-[#E2DFD6] shrink-0" id="progress-map-rail">
           <div className="flex items-center gap-1 text-[11px] mb-1 font-semibold uppercase tracking-wider text-[#7C786D]">
             <span>文献页进度：</span>
+            {batchRunning && batchProgress && (
+              <span className="ml-2 bg-[#1A1A1A] text-[#F9F7F2] text-[10px] px-2 py-0.5 rounded font-mono font-bold animate-pulse normal-case">
+                ⏳ 批量级联中: {batchProgress.current} / {batchProgress.total} 页 ({Math.round((batchProgress.current / batchProgress.total) * 100)}%)
+              </span>
+            )}
             <div className="flex items-center gap-3 ml-2 normal-case font-normal text-[#7C786D]">
               <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-white border border-[#DCD9CE] block"></span> 未处理</span>
               <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm bg-amber-100 border border-amber-300 block"></span> 提取中</span>
