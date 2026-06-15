@@ -69,11 +69,11 @@ const AVAILABLE_MODELS: ModelOption[] = [
     isPaid: false
   },
   { 
-    id: 'gemini-3.1-pro-preview', 
-    name: 'Gemini 3.1 Pro Preview (高精翻译)', 
-    type: 'pro', 
-    description: '深度推理大模型，具有高水平深度学术文献翻译能力。',
-    isPaid: true
+    id: 'gemini-2.5-flash', 
+    name: 'Gemini 2.5 Flash (平衡)', 
+    type: 'flash', 
+    description: '新一代多模态大模型，翻译速度与理解准确度完美平衡。',
+    isPaid: false
   },
   { 
     id: 'gemini-3.1-flash-lite', 
@@ -165,6 +165,8 @@ export default function App() {
   const [fileSize, setFileSize] = useState<string>('');
   const [totalPages, setTotalPages] = useState<number>(0);
   const [currentPage, setCurrentPage] = useState<number>(1);
+  const [batchStartPage, setBatchStartPage] = useState<number>(1);
+  const [batchEndPage, setBatchEndPage] = useState<number>(1);
   const [pages, setPages] = useState<{ [key: number]: PageData }>({});
   
   // PDF processing states
@@ -573,6 +575,8 @@ export default function App() {
             const pdf = await pdfjs.getDocument({ data: typedarray }).promise;
             setPdfDoc(pdf);
             setTotalPages(pdf.numPages);
+            setBatchStartPage(1);
+            setBatchEndPage(pdf.numPages);
             addLog(`PDF 载入成功。共检测到 ${pdf.numPages} 页。`, 'success');
             
             // Set up empty list structure or restore from local cache
@@ -621,6 +625,8 @@ export default function App() {
         const imgUrl = this.result as string;
         setPdfDoc(null);
         setTotalPages(1);
+        setBatchStartPage(1);
+        setBatchEndPage(1);
         setPages({
           1: {
             pageNumber: 1,
@@ -1178,16 +1184,25 @@ ${sourceJapanese}
       return;
     }
 
+    // 校验选择的页面范围
+    let start = Math.max(1, Math.min(batchStartPage, totalPages));
+    let end = Math.max(1, Math.min(batchEndPage, totalPages));
+    if (start > end) {
+      const temp = start;
+      start = end;
+      end = temp;
+    }
+
     batchRunningRef.current = true;
     setBatchRunning(true);
-    addLog(`启动批量自动化任务：从第 ${currentPage} 页开始翻译，直至文档最后一页...`, 'warn');
+    addLog(`启动批量级联翻译：处理范围为第 ${start} 页至第 ${end} 页...`, 'warn');
 
-    let currentWorkingPage = currentPage;
-    while (currentWorkingPage <= totalPages) {
+    let currentWorkingPage = start;
+    while (currentWorkingPage <= end) {
       if (!batchRunningRef.current) break;
 
       setCurrentPage(currentWorkingPage); // Slide client visually to see the current page
-      setBatchProgress({ current: currentWorkingPage, total: totalPages });
+      setBatchProgress({ current: currentWorkingPage, total: end });
 
       const pageState = pages[currentWorkingPage];
       if (pageState && pageState.status === 'completed' && pageState.translatedText.trim()) {
@@ -1196,7 +1211,7 @@ ${sourceJapanese}
         continue;
       }
 
-      addLog(`[批量处理] 正在处理第 ${currentWorkingPage} / ${totalPages} 页...`, 'info');
+      addLog(`[批量处理] 正在处理第 ${currentWorkingPage} / ${end} 页...`, 'info');
 
       try {
         let recognized = '';
@@ -1236,7 +1251,7 @@ ${sourceJapanese}
   /**
    * Export Utilities (Word standard .doc Document Export with Rich Layouts)
    */
-  const exportTranslatedDocument = (type: 'translation' | 'bilingual' | 'original') => {
+  const exportTranslatedDocument = (type: 'translation' | 'bilingual' | 'original', scope: 'current' | 'all' = 'all') => {
     const dateStr = new Date().toLocaleDateString();
     
     // Helper to translate markdown headers, lists, and paragraphs to native styled HTML for Word
@@ -1298,13 +1313,22 @@ ${sourceJapanese}
         .replace(/`(.*?)`/g, '<code style="background-color: #f5f4ef; padding: 2px 4px; font-family: \'Consolas\', monospace; font-size: 9.5pt;">$1</code>');
     };
 
+    const exportPages: number[] = [];
+    if (scope === 'current') {
+      exportPages.push(currentPage);
+    } else {
+      for (let i = 1; i <= totalPages; i++) {
+        exportPages.push(i);
+      }
+    }
+
     let innerHtml = '';
     
     if (type === 'original') {
       innerHtml += `<h1 style="text-align: center; font-size: 22pt; font-weight: bold; color: #1a1a1a; margin-bottom: 15px;">文献原文视觉提取</h1>`;
       innerHtml += `<p style="text-align: center; color: #7c786d; font-size: 10pt; margin-bottom: 30px;">（全自动提取文献原文，保留自然分栏与核心排版）</p>`;
       
-      for (let i = 1; i <= totalPages; i++) {
+      for (const i of exportPages) {
         if (pages[i]?.recognizedText) {
           innerHtml += `<div style="margin-top: 25px; margin-bottom: 15px; border-bottom: 1px solid #7c786d; padding-bottom: 3px;"><strong style="font-size: 12pt; color: #7c786d;">第 ${i} 页 原文内容</strong></div>`;
           innerHtml += `<div style="margin-bottom: 40px;">${mdToHtml(pages[i].recognizedText)}</div>`;
@@ -1314,7 +1338,7 @@ ${sourceJapanese}
       innerHtml += `<h1 style="text-align: center; font-size: 22pt; font-weight: bold; color: #1a1a1a; margin-bottom: 15px;">智能学术译文成果</h1>`;
       innerHtml += `<p style="text-align: center; color: #7c786d; font-size: 10pt; margin-bottom: 30px;">（学术论文精细化意译，剔除页端残留及无关字符）</p>`;
       
-      for (let i = 1; i <= totalPages; i++) {
+      for (const i of exportPages) {
         if (pages[i]?.translatedText) {
           innerHtml += `<div style="margin-top: 25px; margin-bottom: 15px; border-bottom: 1px solid #7c786d; padding-bottom: 3px;"><strong style="font-size: 12pt; color: #7c786d;">第 ${i} 页 译文内容</strong></div>`;
           innerHtml += `<div style="margin-bottom: 40px;">${mdToHtml(pages[i].translatedText)}</div>`;
@@ -1325,7 +1349,7 @@ ${sourceJapanese}
       innerHtml += `<p style="text-align: center; color: #7c786d; font-size: 10pt; margin-bottom: 30px;">源文件：${fileName || '学术文献'} | 原文与智能学术译文逐段横排对照</p>`;
       
       let isFirstRendered = true;
-      for (let i = 1; i <= totalPages; i++) {
+      for (const i of exportPages) {
         const recognizedText = pages[i]?.recognizedText || '';
         const translatedText = pages[i]?.translatedText || '';
         if (recognizedText || translatedText) {
@@ -1411,12 +1435,13 @@ ${sourceJapanese}
     link.href = url;
     
     const fileBaseName = fileName ? fileName.split('.')[0] : 'literature';
-    const typeLabel = type === 'original' ? '仅原文提取' : type === 'translation' ? '仅译文提取' : '双语对照';
-    link.download = `${fileBaseName}_${typeLabel}.doc`;
+    const typeLabel = type === 'original' ? '仅原文' : type === 'translation' ? '仅译文' : '双语对照';
+    const scopeLabel = scope === 'current' ? `_第${currentPage}页` : '_完整版';
+    link.download = `${fileBaseName}_${typeLabel}${scopeLabel}.doc`;
     link.click();
     URL.revokeObjectURL(url);
     
-    addLog(`成功以 Word 格式 (.doc) 导出【${typeLabel}】成果文件。`, 'success');
+    addLog(`成功以 Word 格式 (.doc) 导出【${typeLabel} (${scope === 'current' ? `第${currentPage}页` : '全部页'})】成果文件。`, 'success');
   };
 
   // Keep saved copies of edited texts
@@ -1519,11 +1544,11 @@ ${sourceJapanese}
       </header>
 
       {/* 2. MAIN WORKSPACE UTILITY RAIL */}
-      <div className="bg-[#F1EFE9] px-6 py-4 border-b border-[#E2DFD6] flex flex-wrap items-center justify-between gap-3 shrink-0">
-        <div className="flex items-center gap-3 flex-wrap">
+      <div className="bg-[#F1EFE9] px-6 py-3 border-b border-[#E2DFD6] flex flex-wrap items-center justify-between gap-3 shrink-0">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={() => fileInputRef.current?.click()}
-            className="px-5 py-2.5 text-xs font-bold uppercase tracking-wider rounded-sm bg-[#1A1A1A] text-[#F9F7F2] hover:bg-black flex items-center gap-2 shadow-sm transition-colors cursor-pointer"
+            className="px-4 py-2 text-xs font-bold uppercase tracking-wider rounded-sm bg-[#1A1A1A] text-[#F9F7F2] hover:bg-black flex items-center gap-2 shadow-sm transition-colors cursor-pointer shrink-0 h-[36px]"
             id="btn-import-file"
           >
             <Upload size={14} />
@@ -1538,8 +1563,8 @@ ${sourceJapanese}
           />
 
           {/* Source and Target Languages Selection */}
-          <div className="flex items-center gap-1 bg-white border border-[#DCD9CE] rounded-sm px-2.5 py-1 text-xs select-none">
-            <span className="text-[#7C786D] font-bold">源语言:</span>
+          <div className="flex items-center gap-1 bg-white border border-[#DCD9CE] rounded-sm px-2 py-1 text-xs select-none h-[36px]">
+            <span className="text-[#7C786D] font-bold scale-90">源:</span>
             <select
               value={config.sourceLanguage}
               onChange={(e) => setConfig((c) => ({ ...c, sourceLanguage: e.target.value }))}
@@ -1547,14 +1572,14 @@ ${sourceJapanese}
             >
               {LANGUAGES_SOURCE.map((lang) => (
                 <option key={`lang-src-${lang.id}`} value={lang.id}>
-                  {lang.name}
+                  {lang.name.split(' ')[0]}
                 </option>
               ))}
             </select>
           </div>
 
-          <div className="flex items-center gap-1 bg-white border border-[#DCD9CE] rounded-sm px-2.5 py-1 text-xs select-none">
-            <span className="text-[#7C786D] font-bold">目标翻译语言:</span>
+          <div className="flex items-center gap-1 bg-white border border-[#DCD9CE] rounded-sm px-2 py-1 text-xs select-none h-[36px]">
+            <span className="text-[#7C786D] font-bold scale-90">译:</span>
             <select
               value={config.targetLanguage}
               onChange={(e) => setConfig((c) => ({ ...c, targetLanguage: e.target.value }))}
@@ -1562,43 +1587,39 @@ ${sourceJapanese}
             >
               {LANGUAGES_TARGET.map((lang) => (
                 <option key={`lang-tgt-${lang.id}`} value={lang.id}>
-                  {lang.name}
+                  {lang.name.split(' ')[0]}
                 </option>
               ))}
             </select>
           </div>
 
           {fileName && (
-            <div className="flex items-center gap-2 bg-white px-3 py-1.5 rounded-sm border border-[#DCD9CE] text-xs text-[#1A1A1A]">
-              <FileText size={14} className="text-[#7C786D]" />
-              <div className="max-w-[150px] lg:max-w-[220px] truncate font-semibold" title={fileName}>
+            <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-sm border border-[#DCD9CE] text-xs text-[#1A1A1A] h-[36px]">
+              <FileText size={13} className="text-[#7C786D] shrink-0" />
+              <div className="max-w-[100px] lg:max-w-[150px] truncate font-semibold text-[11px]" title={fileName}>
                 {fileName}
               </div>
-              <span className="text-[10px] text-[#7C786D] bg-[#F1EFE9] border border-[#DCD9CE] px-1.5 py-0.5 rounded-sm font-mono">
+              <span className="text-[10px] text-[#7C786D] bg-[#F1EFE9] border border-[#DCD9CE] px-1 py-0.5 rounded-sm font-mono shrink-0 scale-90">
                 {fileSize}
               </span>
               <button
                 onClick={clearDocumentCache}
-                className="text-[10px] font-semibold text-red-700 hover:text-white bg-red-50 hover:bg-red-700 border border-red-200 hover:border-red-700 px-1.5 py-0.5 rounded-sm ml-1 cursor-pointer transition-all"
-                title="清除由于级联翻译暂存于本地的当前文献进度，重新开始"
+                className="text-[10px] font-semibold text-red-700 hover:text-white bg-red-50 hover:bg-red-700 border border-red-200 hover:border-red-700 px-1.5 py-0.5 rounded-sm cursor-pointer transition-all shrink-0 scale-90"
+                title="清除本地级联进度"
               >
-                清除缓存
+                清除
               </button>
             </div>
           )}
-        </div>
 
-        {/* Translation Progress Controls */}
-        <div className="flex items-center gap-3">
           {totalPages > 0 && (
-            <div className="flex items-center gap-2 text-xs bg-white border border-[#DCD9CE] rounded-sm px-2.5 py-1 text-[#1A1A1A] h-[36px]">
-              <span className="text-[#7C786D] font-medium">页码:</span>
+            <div className="flex items-center gap-1 text-xs bg-white border border-[#DCD9CE] rounded-sm px-1.5 py-1 text-[#1A1A1A] h-[36px] shrink-0">
               <button 
                 onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
                 disabled={currentPage === 1}
                 className="p-1 rounded-sm text-[#7C786D] hover:bg-[#F1EFE9] disabled:opacity-30 disabled:hover:bg-transparent"
               >
-                <ChevronLeft size={16} />
+                <ChevronLeft size={14} />
               </button>
               <input 
                 type="number"
@@ -1607,90 +1628,158 @@ ${sourceJapanese}
                   const val = parseInt(e.target.value);
                   if (val >= 1 && val <= totalPages) setCurrentPage(val);
                 }}
-                className="w-10 bg-[#F1EFE9] text-center font-mono border border-[#DCD9CE] py-0.5 rounded-sm text-[#1A1A1A] text-xs outline-none"
+                className="w-10 bg-[#F1EFE9] text-center font-mono border border-[#DCD9CE] py-0.5 rounded-sm text-[#1A1A1A] text-xs outline-none focus:border-amber-600"
               />
-              <span className="text-[#DCD9CE]">/</span>
-              <span className="text-[#1A1A1A] font-mono">{totalPages}</span>
+              <span className="text-[#DCD9CE] scale-90">/</span>
+              <span className="text-[#1A1A1A] font-mono min-w-[20px] text-center">{totalPages}</span>
               <button 
                 onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
                 disabled={currentPage === totalPages}
                 className="p-1 rounded-sm text-[#7C786D] hover:bg-[#F1EFE9] disabled:opacity-30 disabled:hover:bg-transparent"
               >
-                <ChevronRight size={16} />
+                <ChevronRight size={14} />
               </button>
             </div>
           )}
+        </div>
 
-          {/* Core Pipeline Executors buttons */}
-          <div className="flex items-center gap-2">
-            <button
-              onClick={executeUnifiedWorkflow}
-              disabled={!totalPages || isOcrProcessing || isTranslationProcessing || batchRunning}
-              className="h-[36px] px-4 text-xs font-semibold rounded-sm bg-white hover:bg-[#F9F7F2] border border-[#DCD9CE] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 text-amber-800 transition-colors cursor-pointer"
-              id="btn-single-run"
-              title="一键提取并翻译当前页面"
-            >
-              <Sparkles size={14} />
-              双步一键执行
-            </button>
+        {/* Core Pipeline Executors and export buttons */}
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <button
+            onClick={executeUnifiedWorkflow}
+            disabled={!totalPages || isOcrProcessing || isTranslationProcessing || batchRunning}
+            className="h-[36px] px-3 text-xs font-semibold rounded-sm bg-white hover:bg-[#F9F7F2] border border-[#DCD9CE] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 text-amber-800 transition-colors cursor-pointer shrink-0"
+            id="btn-single-run"
+            title="一键提取并翻译当前页面"
+          >
+            <Sparkles size={12} className="shrink-0" />
+            双步一键执行
+          </button>
 
-            <button
-              onClick={startBatchProcess}
-              disabled={!totalPages || isOcrProcessing || isTranslationProcessing}
-              className={`h-[36px] px-4 text-xs font-semibold rounded-sm flex items-center gap-1.5 transition-colors cursor-pointer ${
-                batchRunning 
-                  ? 'bg-red-700 text-white hover:bg-red-800 border border-red-800' 
-                  : 'bg-[#1A1A1A] hover:bg-black text-[#F9F7F2] border border-[#1A1A1A] shadow-sm'
-              } disabled:opacity-40 disabled:cursor-not-allowed`}
-              id="btn-batch-process"
-              title="自动化不间断处理后续页面"
-            >
-              {batchRunning ? (
-                <>
-                  <Loader2 size={13} className="animate-spin" />
-                  停止批量 ({batchProgress ? `${batchProgress.current}/${batchProgress.total}页` : '计算中'})
-                </>
-              ) : (
-                <>
-                  <Play size={13} />
-                  批量级联翻译
-                </>
-              )}
-            </button>
-
-            <div className="relative group/export inline-block">
-              <button
-                disabled={!totalPages}
-                className="h-[36px] px-4 text-xs font-semibold rounded-sm bg-white hover:bg-[#F9F7F2] border border-[#DCD9CE] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 text-[#1A1A1A] transition-colors cursor-pointer select-none"
-                id="btn-toolbar-export"
-                title="导出文献格式识别译文"
-              >
-                <Download size={13} />
-                导 出
-              </button>
-              {totalPages > 0 && (
-                <div className="absolute right-0 top-full mt-1 border border-[#DCD9CE] bg-white rounded-sm shadow-md opacity-0 pointer-events-none group-focus-within/export:opacity-100 group-hover/export:opacity-100 group-focus-within/export:pointer-events-auto group-hover/export:pointer-events-auto transition text-xs py-1 w-36 z-50 flex flex-col font-sans">
-                  <button 
-                    onClick={() => exportTranslatedDocument('original')}
-                    className="px-3 py-2 text-left text-[#1A1A1A] hover:bg-[#F1EFE9] transition-colors cursor-pointer font-medium"
-                  >
-                    仅原文提取 (.doc)
-                  </button>
-                  <button 
-                    onClick={() => exportTranslatedDocument('translation')}
-                    className="px-3 py-2 text-left text-[#1A1A1A] hover:bg-[#F1EFE9] transition-colors cursor-pointer font-medium"
-                  >
-                    仅译文翻译 (.doc)
-                  </button>
-                  <button 
-                    onClick={() => exportTranslatedDocument('bilingual')}
-                    className="px-3 py-2 text-left text-[#1A1A1A] hover:bg-[#F1EFE9] transition-colors cursor-pointer font-medium"
-                  >
-                    双语对照 (.doc)
-                  </button>
-                </div>
-              )}
+          {totalPages > 0 && (
+            <div className="flex items-center gap-1 text-xs bg-white border border-[#DCD9CE] rounded-sm px-2 h-[36px] text-[#1A1A1A] shrink-0">
+              <span className="text-[#7C786D] font-medium scale-90 origin-left">范围:</span>
+              <input
+                type="number"
+                min={1}
+                max={totalPages}
+                value={batchStartPage}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value);
+                  if (val >= 1 && val <= totalPages) setBatchStartPage(val);
+                }}
+                disabled={batchRunning}
+                className="w-12 bg-[#F1EFE9] text-center font-mono border border-[#DCD9CE] py-0.5 rounded-sm text-[#1A1A1A] text-xs outline-none focus:border-amber-600 disabled:opacity-50"
+                title="批量级联翻译起始页"
+              />
+              <span className="text-[#DCD9CE]">-</span>
+              <input
+                type="number"
+                min={1}
+                max={totalPages}
+                value={batchEndPage}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value);
+                  if (val >= 1 && val <= totalPages) setBatchEndPage(val);
+                }}
+                disabled={batchRunning}
+                className="w-12 bg-[#F1EFE9] text-center font-mono border border-[#DCD9CE] py-0.5 rounded-sm text-[#1A1A1A] text-xs outline-none focus:border-amber-600 disabled:opacity-50"
+                title="批量级联翻译截止页"
+              />
+              <span className="text-[#7C786D] scale-90">页</span>
             </div>
+          )}
+
+          <button
+            onClick={startBatchProcess}
+            disabled={!totalPages || isOcrProcessing || isTranslationProcessing}
+            className={`h-[36px] px-3 text-xs font-semibold rounded-sm flex items-center gap-1 transition-colors cursor-pointer shrink-0 ${
+              batchRunning 
+                ? 'bg-red-700 text-white hover:bg-red-800 border border-red-800 animate-pulse' 
+                : 'bg-[#1A1A1A] hover:bg-black text-[#F9F7F2] border border-[#1A1A1A] shadow-sm'
+            } disabled:opacity-40 disabled:cursor-not-allowed`}
+            id="btn-batch-process"
+            title="自动化不间断处理指定范围页面"
+          >
+            {batchRunning ? (
+              <>
+                <Loader2 size={12} className="animate-spin shrink-0" />
+                停止批量 ({batchProgress ? `${batchProgress.current}/${batchProgress.total}页` : '计算中'})
+              </>
+            ) : (
+              <>
+                <Play size={11} className="shrink-0" />
+                批量级联翻译
+              </>
+            )}
+          </button>
+
+          <div className="relative group/export-current inline-block shrink-0">
+            <button
+              disabled={!totalPages}
+              className="h-[36px] px-3 text-xs font-semibold rounded-sm bg-white hover:bg-[#F9F7F2] border border-[#DCD9CE] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 text-[#1A1A1A] transition-colors cursor-pointer select-none"
+              id="btn-toolbar-export-current"
+              title="导出当前页识别译文"
+            >
+              <Download size={12} className="shrink-0" />
+              导出本页
+            </button>
+            {totalPages > 0 && (
+              <div className="absolute right-0 top-full mt-1 border border-[#DCD9CE] bg-white rounded-sm shadow-md opacity-0 pointer-events-none group-focus-within/export-current:opacity-100 group-hover/export-current:opacity-100 group-focus-within/export-current:pointer-events-auto group-hover/export-current:pointer-events-auto transition text-xs py-1 w-24 z-50 flex flex-col font-sans">
+                <button 
+                  onClick={() => exportTranslatedDocument('original', 'current')}
+                  className="px-2.5 py-1.5 text-left text-[#1A1A1A] hover:bg-[#F1EFE9] transition-colors cursor-pointer font-medium"
+                >
+                  仅原文
+                </button>
+                <button 
+                  onClick={() => exportTranslatedDocument('translation', 'current')}
+                  className="px-2.5 py-1.5 text-left text-[#1A1A1A] hover:bg-[#F1EFE9] transition-colors cursor-pointer font-medium"
+                >
+                  仅译文
+                </button>
+                <button 
+                  onClick={() => exportTranslatedDocument('bilingual', 'current')}
+                  className="px-2.5 py-1.5 text-left text-[#1A1A1A] hover:bg-[#F1EFE9] transition-colors cursor-pointer font-medium"
+                >
+                  双语对照
+                </button>
+              </div>
+            )}
+          </div>
+
+          <div className="relative group/export-all inline-block shrink-0">
+            <button
+              disabled={!totalPages}
+              className="h-[36px] px-3 text-xs font-semibold rounded-sm bg-white hover:bg-[#F9F7F2] border border-[#DCD9CE] disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1 text-[#1A1A1A] transition-colors cursor-pointer select-none"
+              id="btn-toolbar-export-all"
+              title="导出完整文献所有已生成内容"
+            >
+              <Download size={12} className="shrink-0" />
+              导出全部
+            </button>
+            {totalPages > 0 && (
+              <div className="absolute right-0 top-full mt-1 border border-[#DCD9CE] bg-white rounded-sm shadow-md opacity-0 pointer-events-none group-focus-within/export-all:opacity-100 group-hover/export-all:opacity-100 group-focus-within/export-all:pointer-events-auto group-hover/export-all:pointer-events-auto transition text-xs py-1 w-24 z-50 flex flex-col font-sans">
+                <button 
+                  onClick={() => exportTranslatedDocument('original', 'all')}
+                  className="px-2.5 py-1.5 text-left text-[#1A1A1A] hover:bg-[#F1EFE9] transition-colors cursor-pointer font-medium"
+                >
+                  仅原文
+                </button>
+                <button 
+                  onClick={() => exportTranslatedDocument('translation', 'all')}
+                  className="px-2.5 py-1.5 text-left text-[#1A1A1A] hover:bg-[#F1EFE9] transition-colors cursor-pointer font-medium"
+                >
+                  仅译文
+                </button>
+                <button 
+                  onClick={() => exportTranslatedDocument('bilingual', 'all')}
+                  className="px-2.5 py-1.5 text-left text-[#1A1A1A] hover:bg-[#F1EFE9] transition-colors cursor-pointer font-medium"
+                >
+                  双语对照
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -2044,34 +2133,6 @@ ${sourceJapanese}
             {editTranslationText && (
               <div className="mt-2 flex items-center justify-between text-[11px] text-[#7C786D]">
                 <span className="font-mono">译文字数: {editTranslationText.length} 字符</span>
-                <div className="flex items-center gap-1.5">
-                  <div className="relative group/export inline-block">
-                    <button className="px-2 py-1 text-[11px] bg-white border border-[#DCD9CE] hover:bg-[#F9F7F2] text-[#1A1A1A] rounded-sm flex items-center gap-1 cursor-pointer font-bold select-none">
-                      <Download size={11} />
-                      导 出
-                    </button>
-                    <div className="absolute right-0 bottom-full mb-1 border border-[#DCD9CE] bg-white rounded-sm shadow-9 opacity-0 pointer-events-none group-focus-within/export:opacity-100 group-hover/export:opacity-100 group-focus-within/export:pointer-events-auto group-hover/export:pointer-events-auto transition text-xs py-1 w-32 z-20 flex flex-col font-sans">
-                      <button 
-                        onClick={() => exportTranslatedDocument('original')}
-                        className="px-3 py-2 text-left text-[#1A1A1A] hover:bg-[#F1EFE9]"
-                      >
-                        仅原文提取 (.doc)
-                      </button>
-                      <button 
-                        onClick={() => exportTranslatedDocument('translation')}
-                        className="px-3 py-2 text-left text-[#1A1A1A] hover:bg-[#F1EFE9]"
-                      >
-                        仅译文提取 (.doc)
-                      </button>
-                      <button 
-                        onClick={() => exportTranslatedDocument('bilingual')}
-                        className="px-3 py-2 text-left text-[#1A1A1A] hover:bg-[#F1EFE9]"
-                      >
-                        双语对照 (.doc)
-                      </button>
-                    </div>
-                  </div>
-                </div>
               </div>
             )}
           </div>
