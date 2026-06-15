@@ -1605,9 +1605,9 @@ ${sourceJapanese}
               <button
                 onClick={clearDocumentCache}
                 className="text-[10px] font-semibold text-red-700 hover:text-white bg-red-50 hover:bg-red-700 border border-red-200 hover:border-red-700 px-1.5 py-0.5 rounded-sm cursor-pointer transition-all shrink-0 scale-90"
-                title="清除本地级联进度"
+                title="清除由于级联翻译暂存于本地浏览器的当前文献全部页识别与翻译缓存，重新开始"
               >
-                清除
+                清除缓存
               </button>
             </div>
           )}
